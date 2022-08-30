@@ -126,25 +126,25 @@ describe( "escrow1", async () => {
   const tokenAmount = new anchor.BN( 20 );
   const priceExpected = new anchor.BN( 10 );
   
-  const [ vaultPDA, vaultBump ] = await anchor.web3.PublicKey.findProgramAddress( [
-    utf8.encode( "vault" ),
+  const [ vaultPDA, vaultBump ] = await anchor.web3.PublicKey.findProgramAddress(
+    [
+   Buffer.from(anchor.utils.bytes.utf8.encode( "vault" )),
     initializer.publicKey.toBuffer(),
     tokenMint.publicKey.toBuffer(),
   //  tokenAmount.toBuffer( 'le' )
   ],
     program.programId
   );
-
   const [ escrowPDA, escrowBump ] = await anchor.web3.PublicKey.findProgramAddress( [
-    utf8.encode( "escrow" ),
+    Buffer.from(anchor.utils.bytes.utf8.encode( "escrow" )),
     initializer.publicKey.toBuffer(),
   ],
     program.programId
   );  
-//  console.log( escrowPDA,  vaultPDA);
-
-  it("should init an escrow", async () => {
-   
+  console.log( escrowPDA, vaultPDA );
+  
+  it("should init an escrow!", async () => {
+    console.log( 'starting' );
       await program.methods
       .init( tokenAmount , priceExpected)
       .accounts( {
@@ -185,8 +185,8 @@ describe( "escrow1", async () => {
     assert.equal( escrowAccount.expectedPrice, priceExpected );
     assert.equal( escrowAccount.escrowBump, escrowBump );
 
-  });
+  })
     
        
-  
+
 });
