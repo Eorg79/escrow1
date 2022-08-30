@@ -6,7 +6,7 @@ use anchor_spl::{
 };
 
 //declare program id
-declare_id!("B9fCRaaFUtSRoxEVJhCWCAgoMydZZq6iBeMqMzU3RYjY");
+declare_id!("EGGJvpjms73Mcm5FBVuuctBdRqJnzXouSxBgvSLwy6A1");
 
 //business logic
 #[program]
@@ -28,6 +28,10 @@ pub mod escrow1 {
         escrow.escrow_bump = *ctx.bumps.get("escrow").unwrap();
 
         // transfer tokens from initializer token account to vault
+        if token_amount <= 0 {
+            return Err(ErrorCode::InvalidTokenAmount)?;
+        }
+
         let cpi_ctx = CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
@@ -41,9 +45,16 @@ pub mod escrow1 {
         Ok(())
     }
 
-    pub fn accept(ctx: Context<Accept>, token_amount: u64, vault_bump: u8, price_expected: u64) -> Result<()> {
-        
+    pub fn accept(
+        ctx: Context<Accept>,
+        token_amount: u64,
+        price: u64,
+    ) -> Result<()> {
         //transfer price from taker wallet to initializer wallet
+        if price != ctx.accounts.escrow.expected_price {
+            return Err(ErrorCode::InvalidPriceSent)?;
+        }
+
         let cpi_ctx = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             system_program::Transfer {
@@ -51,17 +62,23 @@ pub mod escrow1 {
                 to: ctx.accounts.initializer.to_account_info(),
             },
         );
-        system_program::transfer(cpi_ctx, price_expected)?;
+        system_program::transfer(cpi_ctx, price)?;
 
         //program signer
+
+        let initializer_seed = ctx.accounts.initializer.key;
         let escrow_seeds = &[
             b"escrow",
-            ctx.accounts.initializer.key().as_ref(),
+            initializer_seed.as_ref(),
             &[ctx.accounts.escrow.escrow_bump],
         ];
         let signer = &[&escrow_seeds[..]];
 
         // transfer tokens from vault to taker token account
+        if token_amount != ctx.accounts.escrow.token_amount {
+            return Err(ErrorCode::InvalidTokenAmount)?;
+        }
+
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
@@ -78,7 +95,7 @@ pub mod escrow1 {
             ctx.accounts.token_program.to_account_info(),
             CloseAccount {
                 account: ctx.accounts.vault.to_account_info(),
-                destination: ctx.accounts.initializer_token.to_account_info(),
+                destination: ctx.accounts.initializer.to_account_info(),
                 authority: ctx.accounts.escrow.to_account_info(),
             },
             signer,
@@ -103,7 +120,7 @@ pub struct Escrow {
 
 impl Escrow {
     // + 8 to store the discriminator
-    const LEN: usize = 8 + 1 + 32 + 32 + 8 + 8;
+    const LEN: usize = 8 + 1 + 32 + 32 + 8 + 8 + 1;
 }
 
 //validation struct
@@ -115,7 +132,7 @@ pub struct Init<'info> {
     #[account(
         init,
         payer = initializer,
-        seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref(),token_amount.to_le_bytes().as_ref()],
+        seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref()/*,token_amount.to_le_bytes().as_ref()*/],
         bump,//empty bump constraint,so anchor will find canonical bump itself
         token::mint = token_mint,
         token::authority = escrow,
@@ -128,17 +145,17 @@ pub struct Init<'info> {
         seeds = [b"escrow", initializer.key().as_ref()],
         bump,//empty bump constraint,so anchor will find canonical bump itself
         payer = initializer,
-        space = Escrow::LEN + 1,//+1 for the bump
+        space = Escrow::LEN,
     )]
     pub escrow: Account<'info, Escrow>,
     pub token_program: Program<'info, Token>,
-    #[account(address = system_program::ID)]
+    pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
 }
 
 //validation struct
 #[derive(Accounts)]
-#[instruction(token_amount: u64, vault_bump:u8)]
+#[instruction(token_amount: u64)]
 pub struct Accept<'info> {
     #[account(
         mut,
@@ -149,10 +166,11 @@ pub struct Accept<'info> {
     #[account(
         mut,
         seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref(),token_amount.to_le_bytes().as_ref()],
-        bump = vault_bump,
+        bump,
         close = initializer,
     )]
     pub vault: Account<'info, TokenAccount>,
+    #[account(mut)]
     pub token_mint: Account<'info, Mint>,
     #[account(
         init,
@@ -164,24 +182,22 @@ pub struct Accept<'info> {
 
     #[account(mut)]
     pub taker: Signer<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        address= escrow.initializer,
+    )]
+    /// CHECK: not unsecure, we don't read or write with this account
     pub initializer: AccountInfo<'info>,
-    pub initializer_token: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
-    #[account(address = system_program::ID)] //constraint to check the sys prog ID
+    pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
-    rent: Sysvar<'info, Rent>,
 }
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Token amount must be greater than zero.")]
+    #[msg("Incorrect token amount.")]
     InvalidTokenAmount,
     #[msg("Price payed must be equal to price expected.")]
     InvalidPriceSent,
-    #[msg("Incorrect PDA.")]
-    InvalidProgramAddress,
-    #[msg("Not the owner.")]
-    InvalidAuthority,
 }
