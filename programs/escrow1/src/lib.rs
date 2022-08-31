@@ -27,7 +27,7 @@ pub mod escrow1 {
         escrow.expected_price = price_expected;
         escrow.escrow_bump = *ctx.bumps.get("escrow").unwrap();
         escrow.vault_bump = *ctx.bumps.get("vault").unwrap();
- 
+
         // transfer tokens from initializer token account to vault
         if token_amount <= 0 {
             return Err(ErrorCode::InvalidTokenAmount)?;
@@ -46,11 +46,7 @@ pub mod escrow1 {
         Ok(())
     }
 
-    pub fn accept(
-        ctx: Context<Accept>,
-        token_amount: u64,
-        price: u64,
-    ) -> Result<()> {
+    pub fn accept(ctx: Context<Accept>, token_amount: u64, price: u64) -> Result<()> {
         //transfer price from taker wallet to initializer wallet
         if price != ctx.accounts.escrow.expected_price {
             return Err(ErrorCode::InvalidPriceSent)?;
@@ -65,41 +61,30 @@ pub mod escrow1 {
         );
         system_program::transfer(cpi_ctx, price)?;
 
-    //program signer
+        //program signer
 
-let initializer_seed = ctx.accounts.initializer.key;
-let escrow_seeds = &[
-    b"escrow",
-    initializer_seed.as_ref(),
-    &[ctx.accounts.escrow.escrow_bump],
-    ];
-    let signer = &[&escrow_seeds[..]];
-    
-    /* 
-    let initializer_seed = ctx.accounts.initializer.key;
-    let mint_seed = ctx.accounts.token_mint.key();    
-    let vault_seeds = &[
-        b"vault",
-        initializer_seed.as_ref(),
-        mint_seed.as_ref(),
-        &[ctx.accounts.escrow.vault_bump],
+        let initializer_seed = ctx.accounts.initializer.key;
+        let escrow_seeds = &[
+            b"escrow",
+            initializer_seed.as_ref(),
+            &[ctx.accounts.escrow.escrow_bump],
         ];
-    let signer = &[&vault_seeds[..]];
-    */
-    // transfer tokens from vault to taker token account
-    if token_amount != ctx.accounts.escrow.token_amount {
-        return Err(ErrorCode::InvalidTokenAmount)?;
-    }
-    
-    let cpi_ctx = CpiContext::new_with_signer(
-        ctx.accounts.token_program.to_account_info(),
-        Transfer {
-            from: ctx.accounts.vault.to_account_info(),
-            to: ctx.accounts.taker_token.to_account_info(),
-            authority: ctx.accounts.escrow.to_account_info(),
-        },
-        signer,
-    );
+        let signer = &[&escrow_seeds[..]];
+
+        // transfer tokens from vault to taker token account
+        if token_amount != ctx.accounts.escrow.token_amount {
+            return Err(ErrorCode::InvalidTokenAmount)?;
+        }
+
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.taker_token.to_account_info(),
+                authority: ctx.accounts.escrow.to_account_info(),
+            },
+            signer,
+        );
         anchor_spl::token::transfer(cpi_ctx, token_amount)?;
 
         //close vault
@@ -183,7 +168,6 @@ pub struct Accept<'info> {
         mut,
         seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref()],
         bump,
-        close = initializer,
     )]
     pub vault: Account<'info, TokenAccount>,
     #[account(mut)]
