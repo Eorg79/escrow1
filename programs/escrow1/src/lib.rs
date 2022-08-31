@@ -26,7 +26,8 @@ pub mod escrow1 {
         escrow.token_amount = token_amount;
         escrow.expected_price = price_expected;
         escrow.escrow_bump = *ctx.bumps.get("escrow").unwrap();
-
+        escrow.vault_bump = *ctx.bumps.get("vault").unwrap();
+ 
         // transfer tokens from initializer token account to vault
         if token_amount <= 0 {
             return Err(ErrorCode::InvalidTokenAmount)?;
@@ -64,30 +65,41 @@ pub mod escrow1 {
         );
         system_program::transfer(cpi_ctx, price)?;
 
-        //program signer
+    //program signer
 
-        let initializer_seed = ctx.accounts.initializer.key;
-        let escrow_seeds = &[
-            b"escrow",
-            initializer_seed.as_ref(),
-            &[ctx.accounts.escrow.escrow_bump],
+let initializer_seed = ctx.accounts.initializer.key;
+let escrow_seeds = &[
+    b"escrow",
+    initializer_seed.as_ref(),
+    &[ctx.accounts.escrow.escrow_bump],
+    ];
+    let signer = &[&escrow_seeds[..]];
+    
+    /* 
+    let initializer_seed = ctx.accounts.initializer.key;
+    let mint_seed = ctx.accounts.token_mint.key();    
+    let vault_seeds = &[
+        b"vault",
+        initializer_seed.as_ref(),
+        mint_seed.as_ref(),
+        &[ctx.accounts.escrow.vault_bump],
         ];
-        let signer = &[&escrow_seeds[..]];
-
-        // transfer tokens from vault to taker token account
-        if token_amount != ctx.accounts.escrow.token_amount {
-            return Err(ErrorCode::InvalidTokenAmount)?;
-        }
-
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.vault.to_account_info(),
-                to: ctx.accounts.taker_token.to_account_info(),
-                authority: ctx.accounts.escrow.to_account_info(),
-            },
-            signer,
-        );
+    let signer = &[&vault_seeds[..]];
+    */
+    // transfer tokens from vault to taker token account
+    if token_amount != ctx.accounts.escrow.token_amount {
+        return Err(ErrorCode::InvalidTokenAmount)?;
+    }
+    
+    let cpi_ctx = CpiContext::new_with_signer(
+        ctx.accounts.token_program.to_account_info(),
+        Transfer {
+            from: ctx.accounts.vault.to_account_info(),
+            to: ctx.accounts.taker_token.to_account_info(),
+            authority: ctx.accounts.escrow.to_account_info(),
+        },
+        signer,
+    );
         anchor_spl::token::transfer(cpi_ctx, token_amount)?;
 
         //close vault
@@ -116,30 +128,18 @@ pub struct Escrow {
     pub token_amount: u64,
     pub expected_price: u64,
     pub escrow_bump: u8,
+    pub vault_bump: u8,
 }
 
 impl Escrow {
     // + 8 to store the discriminator
-    const LEN: usize = 8 + 1 + 32 + 32 + 8 + 8 + 1;
+    const LEN: usize = 8 + 1 + 32 + 32 + 8 + 8 + 1 + 1;
 }
 
 //validation struct
 #[derive(Accounts)]
 #[instruction(token_amount: u64)]
 pub struct Init<'info> {
-    #[account(mut)]
-    pub initializer: Signer<'info>,
-    #[account(
-        init,
-        payer = initializer,
-        seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref()/*,token_amount.to_le_bytes().as_ref()*/],
-        bump,//empty bump constraint,so anchor will find canonical bump itself
-        token::mint = token_mint,
-        token::authority = escrow,
-    )]
-    pub vault: Account<'info, TokenAccount>,
-    pub initializer_token: Account<'info, TokenAccount>,
-    pub token_mint: Account<'info, Mint>,
     #[account(
         init,
         seeds = [b"escrow", initializer.key().as_ref()],
@@ -148,6 +148,21 @@ pub struct Init<'info> {
         space = Escrow::LEN,
     )]
     pub escrow: Account<'info, Escrow>,
+    #[account(
+        init,
+        payer = initializer,
+        seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref()],
+        bump,//empty bump constraint,so anchor will find canonical bump itself
+        token::mint = token_mint,
+        token::authority = escrow,
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub initializer: Signer<'info>,
+    #[account(mut)]
+    pub initializer_token: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub token_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
@@ -160,12 +175,13 @@ pub struct Accept<'info> {
     #[account(
         mut,
         seeds=[b"escrow", initializer.key().as_ref()],
-        bump = escrow.escrow_bump,
+        bump,
+        close = initializer,
     )]
     pub escrow: Account<'info, Escrow>,
     #[account(
         mut,
-        seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref(),token_amount.to_le_bytes().as_ref()],
+        seeds = [b"vault", initializer.key().as_ref(), token_mint.key().as_ref()],
         bump,
         close = initializer,
     )]
