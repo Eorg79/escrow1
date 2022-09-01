@@ -1,9 +1,9 @@
 import * as anchor from "@project-serum/anchor";
-import { Program } from "@project-serum/anchor";
+import { AnchorError, LangErrorMessage, Program } from "@project-serum/anchor";
 import * as spl from '@solana/spl-token';
 import { assert, expect } from "chai";
 import { Escrow1 } from "../target/types/escrow1";
-import { SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
+import { Connection, LAMPORTS_PER_SOL, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
 import { getAssociatedTokenAddress } from "@solana/spl-token";
 const { SystemProgram } = anchor.web3;
 
@@ -15,7 +15,7 @@ describe( "escrow1", () =>
 
   const program = anchor.workspace.Escrow1 as Program<Escrow1>;
   const tokenAmount = new anchor.BN( 20 );
-  const priceExpected = new anchor.BN( 10 );
+  const priceExpected = new anchor.BN( 10 * LAMPORTS_PER_SOL );
 
   let initializer: anchor.web3.Keypair;
   let tokenMint: anchor.web3.Keypair;
@@ -24,6 +24,8 @@ describe( "escrow1", () =>
   let initializerTokenAccount: anchor.web3.PublicKey;
   let taker: anchor.web3.Keypair;
   let initializerTokenAccountBal: anchor.BN;
+  let vaultAccountBal: anchor.BN;
+  let takerAccountBal: anchor.BN;
 
   beforeEach( async function ()
   {
@@ -36,7 +38,7 @@ describe( "escrow1", () =>
       fundTx.add( anchor.web3.SystemProgram.transfer( {
         fromPubkey: provider.wallet.publicKey,
         toPubkey: initializer.publicKey,
-        lamports: 10 * anchor.web3.LAMPORTS_PER_SOL,
+        lamports: 10 * LAMPORTS_PER_SOL,
       } ) );
 
       const fundTxSig = await provider.sendAndConfirm( fundTx );
@@ -52,7 +54,7 @@ describe( "escrow1", () =>
       fundTx.add( anchor.web3.SystemProgram.transfer( {
         fromPubkey: provider.wallet.publicKey,
         toPubkey: taker.publicKey,
-        lamports: 10 * anchor.web3.LAMPORTS_PER_SOL,
+        lamports: 12 * LAMPORTS_PER_SOL,
       } ) );
 
       const fundTxSig = await provider.sendAndConfirm( fundTx );
@@ -161,8 +163,6 @@ describe( "escrow1", () =>
       program.programId
     );
 
-    console.log( escrowPDA, vaultPDA );
-
     await program.methods
       .init( tokenAmount, priceExpected )
       .accounts( {
@@ -242,8 +242,10 @@ describe( "escrow1", () =>
       .rpc();
 
     console.log( 'escrow initialized' );
-    const escAcc = await program.account.escrow.getAccountInfo( escrowPDA );
-    console.log( escAcc.owner.toBase58() );
+
+    const initializerBal = await provider.connection.getBalance( initializer.publicKey );
+    const escrowBal = await provider.connection.getBalance( escrowPDA );
+    const vaultBal = await provider.connection.getBalance( vaultPDA );
 
     await program.methods
       .accept( tokenAmount, priceExpected )
@@ -264,6 +266,144 @@ describe( "escrow1", () =>
 
     console.log( 'escrow completed' );
 
+    // assert that 10 SOL has been transfered to initializer wallet
+    const initializerNewBal = await provider.connection.getBalance( initializer.publicKey );
+    assert.equal( initializerNewBal, ( initializerBal + priceExpected.toNumber() + escrowBal + vaultBal ) );
+
+    // assert that 20 tokens has been transfered from vaultAccount to taker ATA
+    const takerATAInfo = await spl.getAccount( provider.connection, takerATA );
+    assert.equal( takerATAInfo.amount.toString(), "20" );
+
+    //assert that escrow account has been closed
+    try
+    {
+      await program.account.escrow.fetch( escrowPDA );
+
+    } catch ( e )
+    {
+      assert.equal( e.toString(), `Error: Account does not exist ${ escrowPDA }` );
+    }
+
+    //assert that vault token account has been closed
+    try
+    {
+      await spl.getAccount( provider.connection, vaultPDA );
+
+    } catch ( e )
+    {
+      assert.equal( e.toString(), 'TokenAccountNotFoundError' );
+      return;
+    }
+    assert.fail( "TokenAccountNotFoundError" );
+
   } );
+
+  it( "should not init an escrow with 0 token amount!", async () =>
+  {
+    const [ escrowPDA, escrowBump ] = await anchor.web3.PublicKey.findProgramAddress( [
+      Buffer.from( anchor.utils.bytes.utf8.encode( "escrow" ) ),
+      initializer.publicKey.toBuffer(),
+    ],
+      program.programId
+    );
+
+    const [ vaultPDA, vaultBump ] = await anchor.web3.PublicKey.findProgramAddress(
+      [
+        Buffer.from( anchor.utils.bytes.utf8.encode( "vault" ) ),
+        initializer.publicKey.toBuffer(),
+        tokenMint.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+    try
+    {
+      await program.methods
+        .init( new anchor.BN( '0' ), priceExpected )
+        .accounts( {
+          escrow: escrowPDA,
+          vault: vaultPDA,
+          initializer: initializer.publicKey,
+          initializerToken: initializerTokenAccount,
+          tokenMint: tokenMintAccount,
+          tokenProgram: spl.TOKEN_PROGRAM_ID,
+          rent: SYSVAR_RENT_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        } )
+        .signers( [ initializer ] )
+        .rpc();
+
+
+    } catch ( e )
+    {
+      assert.equal( e.error.errorMessage.toString(), 'Incorrect token amount.' );
+      return;
+    }
+    assert.fail( 'Error Message: Incorrect token amount.' );
+
+  } );
+
+  it( "should not accept an escrow when price not match!", async () =>
+  {
+    const takerATA = await getAssociatedTokenAddress( tokenMint.publicKey, taker.publicKey );
+
+    // get PDAs
+    const [ escrowPDA, escrowBump ] = await anchor.web3.PublicKey.findProgramAddress( [
+      Buffer.from( anchor.utils.bytes.utf8.encode( "escrow" ) ),
+      initializer.publicKey.toBuffer(),
+    ],
+      program.programId
+    );
+
+    const [ vaultPDA, vaultBump ] = await anchor.web3.PublicKey.findProgramAddress(
+      [
+        Buffer.from( anchor.utils.bytes.utf8.encode( "vault" ) ),
+        initializer.publicKey.toBuffer(),
+        tokenMint.publicKey.toBuffer(),
+      ],
+      program.programId
+    );
+    try
+    {
+      await program.methods
+        .init( tokenAmount, priceExpected )
+        .accounts( {
+          escrow: escrowPDA,
+          vault: vaultPDA,
+          initializer: initializer.publicKey,
+          initializerToken: initializerTokenAccount,
+          tokenMint: tokenMintAccount,
+          tokenProgram: spl.TOKEN_PROGRAM_ID,
+          rent: SYSVAR_RENT_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        } )
+        .signers( [ initializer ] )
+        .rpc();
+
+      await program.methods
+        .accept( tokenAmount, new anchor.BN( '2' ) )
+        .accounts( {
+          escrow: escrowPDA,
+          vault: vaultPDA,
+          tokenMint: tokenMint.publicKey,
+          takerToken: takerATA,
+          taker: taker.publicKey,
+          initializer: initializer.publicKey,
+          tokenProgram: spl.TOKEN_PROGRAM_ID,
+          associatedTokenProgram: spl.ASSOCIATED_TOKEN_PROGRAM_ID,
+          rent: SYSVAR_RENT_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        } )
+        .signers( [ taker ] )
+        .rpc();
+
+    } catch ( e )
+    {
+      assert.equal( e.error.errorMessage.toString(), 'Price payed must be equal to price expected.' );
+      return;
+    }
+    assert.fail( 'Error Message: Price payed must be equal to price expected.' );
+
+  } );
+
 
 } );
